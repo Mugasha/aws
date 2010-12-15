@@ -76,7 +76,7 @@ module Aws
     
     include AwsBaseInterface
 
-    API_VERSION      = "2010-08-01"
+    API_VERSION      = "2010-11-01"
     DEFAULT_HOST     = 'cloudfront.amazonaws.com'
     DEFAULT_PORT     = 443
     DEFAULT_PROTOCOL = 'https'
@@ -176,6 +176,32 @@ module Aws
     #-----------------------------------------------------------------
     #      API Calls:
     #-----------------------------------------------------------------
+
+    # Validation API.
+    # 
+    # Post Invalidation
+    # Create a new invalidation batch request. 
+    #
+    #
+
+    def invalidate_distribution(distribution_id, caller_reference, paths)
+      path_body = ""
+      paths.each { |path| path_body << "<Path>#{path}</Path>" }
+      body = <<-EOXML
+        <?xml version="1.0" encoding="UTF-8"?>
+        <InvalidationBatch> 
+          #{path_body}
+          <CallerReference>#{caller_reference}</CallerReference>
+        </InvalidationBatch>
+      EOXML
+      request_hash = generate_request('POST', "distribution/#{distribution_id}/invalidation", body.strip)
+      merge_headers(request_info(request_hash, AcfInvalidationParser.new))
+    end
+
+    def list_invalidations(distribution_id)
+      request_hash = generate_request('GET', "distribution/#{distribution_id}/invalidation")
+      request_cache_or_info :list_invalidations, request_hash,  AcfInvalidationListParser, @@bench
+    end
 
     # List distributions.
     # Returns an array of distributions or Aws::AwsError exception.
@@ -340,7 +366,84 @@ module Aws
     #-----------------------------------------------------------------
     #      PARSERS:
     #-----------------------------------------------------------------
+    
+    # Invalidation Request
+    # 
+    # <InvalidationBatch> 
+    #   <Path>/image1.jpg</Path>
+    #   <CallerReference>my-batch</CallerReference>
+    # </InvalidationBatch>
+    
+    # Invalidation RESPONSE
+    # 
+    # <Invalidation> 
+    #   <Id>[Invalidation ID]</Id> 
+    #   <Status>InProgress</Status> 
+    #   <CreateTime>2010-08-19T19:37:58Z</CreateTime> 
+    #   <InvalidationBatch>
+    #     <Path>/image1.jpg</Path> 
+    #     <Path>/image2.jpg</Path>
+    #     <Path>/videos/movie.flv</Path>
+    #     <CallerReference>my-batch</CallerReference>
+    #   </InvalidationBatch>
+    # </Invalidation>
 
+    # Invalidation List
+    # 
+    # <InvalidationList> 
+    #   <Marker/>
+    #   <NextMarker>[Invalidation ID]</NextMarker> 
+    #   <MaxItems>2</MaxItems>
+    #   <IsTruncated>true</IsTruncated> 
+    #   <InvalidationSummary>
+    #     <Id>[Second Invalidation ID]</Id>
+    #     <Status>Completed</Status>
+    #   </InvalidationSummary> 
+    #   <InvalidationSummary>
+    #     <Id>[First Invalidation ID]</Id>
+    #     <Status>Completed</Status> 
+    #   </InvalidationSummary>
+    # </InvalidationList>
+    
+    # Parses attributes common to many CF Invalidations API calls
+    
+    class AcfBaseInvalidationParser < AwsParser # :nodoc:
+      def reset
+        @invalidation = { :paths => [] }
+        @result = []
+      end
+      def tagend(name)
+        case name
+          when 'Id'               then @invalidation[:aws_id]             = @text
+          when 'Status'           then @invalidation[:status]             = @text
+          when 'CreateTime'       then @invalidation[:CreateTime] = Time.parse(@text)
+          when 'Path'             then @invalidation[:paths] << @text
+        end
+      end
+    end
+    
+    
+    class AcfInvalidationListParser < AcfBaseInvalidationParser # :nodoc:
+      def reset
+        @invalidation = {  }
+        @result = []
+      end
+      def tagend(name)
+        super(name)
+        case name
+          when 'InvalidationSummary' then @result << @invalidation
+        end
+      end
+    end
+    
+    class AcfInvalidationParser < AcfBaseInvalidationParser # :nodoc:
+      def tagend(name)
+        super
+        @result = @invalidation
+      end
+    end
+    
+    
     # Parses attributes common to many CF distribution API calls
     class AcfBaseDistributionParser < AwsParser # :nodoc:
       def reset
@@ -369,6 +472,13 @@ module Aws
       end
     end
 
+    class AcfDistributionParser < AcfBaseDistributionParser # :nodoc:
+      def tagend(name)
+        super
+        @result = @distribution
+      end
+    end
+    
     class AcfDistributionListParser < AcfBaseDistributionParser # :nodoc:
       def tagstart(name, attributes)
         @distribution = { :cnames => [] } if name == 'DistributionSummary'
